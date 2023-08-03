@@ -150,18 +150,34 @@ func TestMachine(t *testing.T) {
 	assert.Equal(t, 0, transitionCAExitCallCount)
 
 	// permitted transition
-	err = m.Transition(transitionAB)
+	err = m.DoTransition(transitionAB)
 	assert.Nil(t, err)
 
 	// permitted transition
-	err = m.Transition(transitionBC)
+	err = m.DoTransition(transitionBC)
 	assert.Nil(t, err)
 
 	// permitted transition
-	err = m.Transition(transitionCA)
+	err = m.DoTransition(transitionCA)
 	assert.Nil(t, err)
 
 	// not permitted transition
-	err = m.Transition(transitionCA)
+	err = m.DoTransition(transitionCA)
+	assert.NotNil(t, err)
+
+	// permitted state change
+	err = m.ChangeState(stateB)
+	assert.Nil(t, err)
+
+	// permitted state change
+	err = m.ChangeState(stateC)
+	assert.Nil(t, err)
+
+	// permitted state change
+	err = m.ChangeState(stateA)
+	assert.Nil(t, err)
+
+	// not permitted state change
+	err = m.ChangeState(stateA)
 	assert.NotNil(t, err)
 }

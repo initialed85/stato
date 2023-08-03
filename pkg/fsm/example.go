@@ -43,5 +43,5 @@ func NewFSM(
 }
 
 func (f *FSM) TransitionAB() error {
-	return f.machine.Transition(f.transitionAB)
+	return f.machine.DoTransition(f.transitionAB)
 }

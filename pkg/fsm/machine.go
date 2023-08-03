@@ -101,6 +101,30 @@ func NewMachine(
 	return &m, nil
 }
 
+func (m *Machine) checkState(state *State) error {
+	for _, possibleState := range m.states {
+		if state != possibleState {
+			continue
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("state %#+v not a known state", state.GetName())
+}
+
+func (m *Machine) checkTransition(transition *Transition) error {
+	for _, possibleTransition := range m.transitions {
+		if transition != possibleTransition {
+			continue
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("transition %#+v not a known transition", transition.GetName())
+}
+
 func (m *Machine) GetName() string {
 	return m.name
 }
@@ -112,26 +136,63 @@ func (m *Machine) GetCurrentState() *State {
 	return m.currentState
 }
 
-func (m *Machine) Transition(transition *Transition) error {
+func (m *Machine) DoTransition(transition *Transition) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	found := false
-	for _, possibleTransition := range m.transitions {
-		if transition == possibleTransition {
-			found = true
-			break
-		}
+	err := m.checkTransition(transition)
+	if err != nil {
+		return err
 	}
 
-	if !found {
+	err = transition.transition(m.currentState)
+	if err != nil {
+		return err
+	}
+
+	m.currentState = transition.destinationState
+
+	return nil
+}
+
+func (m *Machine) ChangeState(destinationState *State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	err := m.checkState(destinationState)
+	if err != nil {
+		return err
+	}
+
+	possibleTransitions := make([]*Transition, 0)
+
+	for _, possibleTransition := range m.transitions {
+		if !(possibleTransition.sourceState == m.currentState && possibleTransition.destinationState == destinationState) {
+			continue
+		}
+
+		possibleTransitions = append(possibleTransitions, possibleTransition)
+	}
+
+	if len(possibleTransitions) == 0 {
 		return fmt.Errorf(
-			"transition %#+v not in transitions",
-			transition.GetName(),
+			"no transition from %#+v to %#+v (state change not permitted)",
+			m.currentState.GetName(),
+			destinationState.GetName(),
 		)
 	}
 
-	err := transition.transition(m.currentState)
+	if len(possibleTransitions) > 1 {
+		return fmt.Errorf(
+			"multiple transitions from %#+v to %#+v (state change permitted, but you have to tell me how)",
+			m.currentState.GetName(),
+			destinationState.GetName(),
+		)
+	}
+
+	transition := possibleTransitions[0]
+
+	err = transition.transition(m.currentState)
 	if err != nil {
 		return err
 	}
