@@ -6,11 +6,14 @@ import (
 )
 
 type Machine struct {
-	mu           sync.Mutex
-	name         string
-	states       []*State
-	transitions  []*Transition
-	currentState *State
+	mu                  sync.Mutex
+	name                string
+	states              []*State
+	stateByName         map[string]*State
+	transitions         []*Transition
+	transitionByName    map[string]*Transition
+	currentState        *State
+	implySelfTransition bool
 }
 
 func NewMachine(
@@ -18,6 +21,7 @@ func NewMachine(
 	states []*State,
 	transitions []*Transition,
 	initialState *State,
+	implySelfTransition bool,
 ) (*Machine, error) {
 	if len(states) == 0 {
 		return &Machine{}, fmt.Errorf("states cannot be empty")
@@ -65,34 +69,77 @@ func NewMachine(
 			if !foundSourceState && !foundDestinationState {
 				message = fmt.Sprintf(
 					"source state of %#+v and destination state of %#+v",
-					sourceState.GetName(),
-					destinationState.GetName(),
+					sourceState.name,
+					destinationState.name,
 				)
 			} else if !foundSourceState {
 				message = fmt.Sprintf(
 					"source state of %#+v",
-					sourceState.GetName(),
+					sourceState.name,
 				)
 			} else if !foundDestinationState {
 				message = fmt.Sprintf(
 					"destination state of %#+v",
-					destinationState.GetName(),
+					destinationState.name,
 				)
 			}
 
 			return &Machine{}, fmt.Errorf(
 				"%v from transition %#+v must be in states",
 				message,
-				transition.GetName(),
+				transition.name,
 			)
 		}
 	}
 
 	m := Machine{
-		name:         name,
-		states:       states,
-		transitions:  transitions,
-		currentState: initialState,
+		name:                name,
+		states:              states,
+		stateByName:         make(map[string]*State),
+		transitionByName:    make(map[string]*Transition),
+		transitions:         transitions,
+		currentState:        initialState,
+		implySelfTransition: implySelfTransition,
+	}
+
+	for _, state := range m.states {
+		m.stateByName[state.GetName()] = state
+	}
+
+	for _, transition := range m.transitions {
+		m.transitionByName[transition.GetName()] = transition
+	}
+
+	if implySelfTransition {
+		for _, state := range m.states {
+			transitionName := fmt.Sprintf("transition_%v_%v", state.name, state.name)
+			_, ok := m.transitionByName[transitionName]
+			if ok {
+				return nil, fmt.Errorf(
+					"implySelfTransition wants to create transition %#+v but it already exists",
+					transitionName,
+				)
+			}
+
+			transition := NewTransition(
+				"some_transition",
+				[]func() error{
+					func() error {
+						return nil
+					},
+				},
+				[]func() error{
+					func() error {
+						return nil
+					},
+				},
+				state,
+				state,
+			)
+
+			m.transitions = append(m.transitions, transition)
+			m.transitionByName[transitionName] = transition
+		}
 	}
 
 	// activate the state but don't fire the enter callbacks
@@ -136,10 +183,7 @@ func (m *Machine) GetCurrentState() *State {
 	return m.currentState
 }
 
-func (m *Machine) DoTransition(transition *Transition) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+func (m *Machine) doTransition(transition *Transition) error {
 	err := m.checkTransition(transition)
 	if err != nil {
 		return err
@@ -155,10 +199,14 @@ func (m *Machine) DoTransition(transition *Transition) error {
 	return nil
 }
 
-func (m *Machine) ChangeState(destinationState *State) error {
+func (m *Machine) DoTransition(transition *Transition) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.doTransition(transition)
+}
+
+func (m *Machine) changeState(destinationState *State) error {
 	err := m.checkState(destinationState)
 	if err != nil {
 		return err
@@ -200,4 +248,67 @@ func (m *Machine) ChangeState(destinationState *State) error {
 	m.currentState = transition.destinationState
 
 	return nil
+}
+
+func (m *Machine) ChangeState(destinationState *State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.changeState(destinationState)
+}
+
+func (m *Machine) getState(name string) (*State, error) {
+	state, ok := m.stateByName[name]
+	if !ok {
+		return nil, fmt.Errorf("state %#+v not a known state", name)
+	}
+
+	return state, nil
+}
+
+func (m *Machine) GetState(name string) (*State, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.getState(name)
+}
+
+func (m *Machine) getTransition(name string) (*Transition, error) {
+	transition, ok := m.transitionByName[name]
+	if !ok {
+		return nil, fmt.Errorf("transition %#+v not a known transition", name)
+	}
+
+	return transition, nil
+}
+
+func (m *Machine) GetTransition(name string) (*Transition, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.getTransition(name)
+}
+
+func (m *Machine) DoTransitionByName(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	transition, err := m.getTransition(name)
+	if err != nil {
+		return err
+	}
+
+	return m.doTransition(transition)
+}
+
+func (m *Machine) ChangeStateByName(name string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	state, err := m.getState(name)
+	if err != nil {
+		return err
+	}
+
+	return m.changeState(state)
 }
