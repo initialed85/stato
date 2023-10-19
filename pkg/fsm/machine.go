@@ -1,314 +1,123 @@
 package fsm
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
 
 type Machine struct {
-	mu                  sync.Mutex
-	name                string
-	states              []*State
-	stateByName         map[string]*State
-	transitions         []*Transition
-	transitionByName    map[string]*Transition
-	currentState        *State
-	implySelfTransition bool
+	implySelfTransition      bool
+	mu                       *sync.Mutex
+	stateByName              map[string]*State
+	transitionBySourceByName map[string]map[*State]*Transition
+	initialState             *State
+	currentState             *State
 }
 
 func NewMachine(
-	name string,
 	states []*State,
 	transitions []*Transition,
 	initialState *State,
-	implySelfTransition bool,
 ) (*Machine, error) {
-	if len(states) == 0 {
-		return &Machine{}, fmt.Errorf("states cannot be empty")
+	m := Machine{
+		mu:                       new(sync.Mutex),
+		stateByName:              make(map[string]*State),
+		transitionBySourceByName: make(map[string]map[*State]*Transition),
 	}
 
-	if len(transitions) == 0 {
-		return &Machine{}, fmt.Errorf("transitions cannot be empty")
-	}
-
-	if initialState == nil {
-		return &Machine{}, fmt.Errorf("initialState cannot be nil")
-	}
-
-	found := false
 	for _, state := range states {
-		if state == initialState {
-			found = true
-			break
+		_, ok := m.stateByName[state.Name()]
+		if ok {
+			return nil, fmt.Errorf("state %#+v already exists", state.Name())
 		}
-	}
-
-	if !found {
-		return &Machine{}, fmt.Errorf("initialState must be in states")
+		m.stateByName[state.Name()] = state
 	}
 
 	for _, transition := range transitions {
-		sourceState := transition.GetSourceState()
-		destinationState := transition.GetDestinationState()
-
-		foundSourceState := false
-		foundDestinationState := false
-		for _, state := range states {
-			if sourceState == state {
-				foundSourceState = true
-			}
-
-			if destinationState == state {
-				foundDestinationState = true
-			}
+		transitionBySource, ok := m.transitionBySourceByName[transition.Name()]
+		if !ok {
+			transitionBySource = make(map[*State]*Transition)
 		}
 
-		if !(foundSourceState || foundDestinationState) {
-			message := ""
-
-			if !foundSourceState && !foundDestinationState {
-				message = fmt.Sprintf(
-					"source state of %#+v and destination state of %#+v",
-					sourceState.name,
-					destinationState.name,
-				)
-			} else if !foundSourceState {
-				message = fmt.Sprintf(
-					"source state of %#+v",
-					sourceState.name,
-				)
-			} else if !foundDestinationState {
-				message = fmt.Sprintf(
-					"destination state of %#+v",
-					destinationState.name,
-				)
-			}
-
-			return &Machine{}, fmt.Errorf(
-				"%v from transition %#+v must be in states",
-				message,
-				transition.name,
+		_, ok = transitionBySource[transition.source]
+		if ok {
+			return nil, fmt.Errorf(
+				"transition %#+v already exists for source %#+v",
+				transition.Name(), transition.GetSource().Name(),
 			)
 		}
+
+		transitionBySource[transition.GetSource()] = transition
+		m.transitionBySourceByName[transition.Name()] = transitionBySource
 	}
 
-	m := Machine{
-		name:                name,
-		states:              states,
-		stateByName:         make(map[string]*State),
-		transitionByName:    make(map[string]*Transition),
-		transitions:         transitions,
-		currentState:        initialState,
-		implySelfTransition: implySelfTransition,
+	_, ok := m.stateByName[initialState.Name()]
+	if !ok {
+		return nil, fmt.Errorf("initial state %#+v not in states", initialState.Name())
 	}
 
-	for _, state := range m.states {
-		m.stateByName[state.GetName()] = state
-	}
-
-	for _, transition := range m.transitions {
-		m.transitionByName[transition.GetName()] = transition
-	}
-
-	if implySelfTransition {
-		for _, state := range m.states {
-			transitionName := fmt.Sprintf("transition_%v_%v", state.name, state.name)
-			_, ok := m.transitionByName[transitionName]
-			if ok {
-				return nil, fmt.Errorf(
-					"implySelfTransition wants to create transition %#+v but it already exists",
-					transitionName,
-				)
-			}
-
-			transition := NewTransition(
-				"some_transition",
-				[]func() error{
-					func() error {
-						return nil
-					},
-				},
-				[]func() error{
-					func() error {
-						return nil
-					},
-				},
-				state,
-				state,
-			)
-
-			m.transitions = append(m.transitions, transition)
-			m.transitionByName[transitionName] = transition
-		}
-	}
-
-	// activate the state but don't fire the enter callbacks
-	initialState.forceActive()
+	m.currentState = initialState
 
 	return &m, nil
 }
 
-func (m *Machine) checkState(state *State) error {
-	for _, possibleState := range m.states {
-		if state != possibleState {
-			continue
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("state %#+v not a known state", state.GetName())
+func (m *Machine) State() string {
+	return m.currentState.Name()
 }
 
-func (m *Machine) checkTransition(transition *Transition) error {
-	for _, possibleTransition := range m.transitions {
-		if transition != possibleTransition {
-			continue
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("transition %#+v not a known transition", transition.GetName())
-}
-
-func (m *Machine) GetName() string {
-	return m.name
-}
-
-func (m *Machine) GetCurrentState() *State {
+func (m *Machine) Transition(name string, ctx context.Context) (context.Context, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	return m.currentState
-}
-
-func (m *Machine) doTransition(transition *Transition) error {
-	err := m.checkTransition(transition)
-	if err != nil {
-		return err
+	transitionBySource, ok := m.transitionBySourceByName[name]
+	if !ok {
+		return nil, fmt.Errorf("transition %#+v not known", name)
 	}
 
-	err = transition.transition(m.currentState)
-	if err != nil {
-		return err
-	}
-
-	m.currentState = transition.destinationState
-
-	return nil
-}
-
-func (m *Machine) DoTransition(transition *Transition) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.doTransition(transition)
-}
-
-func (m *Machine) changeState(destinationState *State) error {
-	err := m.checkState(destinationState)
-	if err != nil {
-		return err
-	}
-
-	possibleTransitions := make([]*Transition, 0)
-
-	for _, possibleTransition := range m.transitions {
-		if !(possibleTransition.sourceState == m.currentState && possibleTransition.destinationState == destinationState) {
-			continue
-		}
-
-		possibleTransitions = append(possibleTransitions, possibleTransition)
-	}
-
-	if len(possibleTransitions) == 0 {
-		return fmt.Errorf(
-			"no transition from %#+v to %#+v (state change not permitted)",
-			m.currentState.GetName(),
-			destinationState.GetName(),
+	transition, ok := transitionBySource[m.currentState]
+	if !ok {
+		return nil, fmt.Errorf(
+			"transition %#+v not valid for current state %#+v",
+			name, m.currentState.Name(),
 		)
 	}
 
-	if len(possibleTransitions) > 1 {
-		return fmt.Errorf(
-			"multiple transitions from %#+v to %#+v (state change permitted, but you have to tell me how)",
-			m.currentState.GetName(),
-			destinationState.GetName(),
-		)
+	getScope := func(ctx context.Context) Scope {
+		return Scope{
+			Transition:  transition.Name(),
+			Source:      transition.source.Name(),
+			Destination: transition.destination.Name(),
+			Context:     ctx,
+		}
 	}
 
-	transition := possibleTransitions[0]
+	var err error
 
-	err = transition.transition(m.currentState)
+	ctx, err = transition.enter(getScope(ctx))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	m.currentState = transition.destinationState
+	if transition.destination != transition.source {
+		ctx, err = transition.source.exit(getScope(ctx))
+		if err != nil {
+			return nil, err
+		}
 
-	return nil
-}
+		m.currentState = transition.destination
 
-func (m *Machine) ChangeState(destinationState *State) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.changeState(destinationState)
-}
-
-func (m *Machine) getState(name string) (*State, error) {
-	state, ok := m.stateByName[name]
-	if !ok {
-		return nil, fmt.Errorf("state %#+v not a known state", name)
+		ctx, err = transition.destination.enter(getScope(ctx))
+		if err != nil {
+			m.currentState = transition.source
+			return nil, err
+		}
 	}
 
-	return state, nil
-}
-
-func (m *Machine) GetState(name string) (*State, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.getState(name)
-}
-
-func (m *Machine) getTransition(name string) (*Transition, error) {
-	transition, ok := m.transitionByName[name]
-	if !ok {
-		return nil, fmt.Errorf("transition %#+v not a known transition", name)
-	}
-
-	return transition, nil
-}
-
-func (m *Machine) GetTransition(name string) (*Transition, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.getTransition(name)
-}
-
-func (m *Machine) DoTransitionByName(name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	transition, err := m.getTransition(name)
+	ctx, err = transition.exit(getScope(ctx))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return m.doTransition(transition)
-}
-
-func (m *Machine) ChangeStateByName(name string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	state, err := m.getState(name)
-	if err != nil {
-		return err
-	}
-
-	return m.changeState(state)
+	return ctx, nil
 }

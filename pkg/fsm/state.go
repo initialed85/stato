@@ -1,42 +1,22 @@
 package fsm
 
 type State struct {
-	name             string
-	contextCallbacks *ContextCallbacks
+	*Named
+	*Callbacks
 }
 
 func NewState(
 	name string,
-	onEnterCallbacks []func() error,
-	onExitCallbacks []func() error,
+	enterCallback Callback,
+	exitCallback Callback,
 ) *State {
 	s := State{
-		name: name,
-		contextCallbacks: NewContextCallbacks(
-			onEnterCallbacks,
-			onExitCallbacks,
+		Named: NewNamed(name),
+		Callbacks: NewCallbacks(
+			enterCallback,
+			exitCallback,
 		),
 	}
 
 	return &s
-}
-
-func (c *State) forceActive() {
-	c.contextCallbacks.forceActive()
-}
-
-func (c *State) enter() error {
-	return c.contextCallbacks.enter()
-}
-
-func (c *State) exit() error {
-	return c.contextCallbacks.exit()
-}
-
-func (c *State) GetName() string {
-	return c.name
-}
-
-func (c *State) GetActive() bool {
-	return c.contextCallbacks.GetActive()
 }
